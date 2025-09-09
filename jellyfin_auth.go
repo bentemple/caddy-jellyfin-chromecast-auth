@@ -1,4 +1,4 @@
-package jellyfinauth
+package jellyfin_auth
 
 import (
 	"bufio"
