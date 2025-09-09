@@ -80,7 +80,7 @@ func (JellyfinAuth) CaddyModule() caddy.ModuleInfo {
 
 func (m *JellyfinAuth) Provision(ctx caddy.Context) error {
 	m.logger = ctx.Logger().Named("jellyfinauth")
-	m.logger.Info("JellyfinAuth middleware provisioning")
+	m.logger.Debug("JellyfinAuth middleware provisioning")
 	if m.Endpoint == "" {
 		m.Endpoint = "/System/Info"
 	}
@@ -142,7 +142,7 @@ func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 
 	// 1) Allowlist bypass
 	if m.ipAllowed(ip) {
-		m.logger.Info("Allowlist bypass, continuing http request for jellyfin")
+		m.logger.Debug("Allowlist bypass, continuing http request for jellyfin")
 		return next.ServeHTTP(w, r)
 	}
 
@@ -169,7 +169,7 @@ func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 	// 5) Cache hit
 	if m.isCached(clean) {
 		m.clearFailures(ip)
-		m.logger.Info("Cached auth, continuing http request for jellyfin")
+		m.logger.Debug("Cached auth, continuing http request for jellyfin")
 		return next.ServeHTTP(w, r)
 	}
 
@@ -183,12 +183,12 @@ func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 	// 7) Cache and allow
 	m.setCache(clean)
 	m.clearFailures(ip)
-	m.logger.Info("Initial request success, caching and continuing http request for jellyfin")
+	m.logger.Debug("Initial request success, caching and continuing http request for jellyfin")
 	return next.ServeHTTP(w, r)
 }
 
 func (m *JellyfinAuth) teapot(w http.ResponseWriter, r *http.Request) error {
-	m.logger.Info("Rejecting request for jellyfin")
+	m.logger.Debug("Rejecting request for jellyfin")
 	if r.ProtoMajor == 1 {
 		w.Header().Set("Connection", "close")
 	}
