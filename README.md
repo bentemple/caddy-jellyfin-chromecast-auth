@@ -21,6 +21,12 @@ xcaddy build \
 
 ### Config
 ```
+# Order before reverse proxies
+# Alternatively, can wrap the entire handle { } within a route block, so handle { route { jellyfinauth {}}}
+{
+  order jellyfinauth before reverse_proxy
+}
+
 :8443 {
 	handle {
 		jellyfinauth {

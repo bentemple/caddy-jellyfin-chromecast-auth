@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
+	"go.uber.org/zap"
 )
 
 func init() {
@@ -51,6 +53,7 @@ type JellyfinAuth struct {
 	FailBanDuration  caddy.Duration `json:"failban_duration,omitempty"`  // e.g. 10m ban
 
 	client *http.Client
+	logger *zap.Logger
 
 	mu          sync.RWMutex
 	cache       map[string]time.Time   // Authorization header -> expiry
@@ -77,6 +80,8 @@ func (JellyfinAuth) CaddyModule() caddy.ModuleInfo {
 }
 
 func (m *JellyfinAuth) Provision(caddy.Context) error {
+	m.logger = ctx.Logger().Named("jellyfinauth")
+	m.logger.Info("JellyfinAuth middleware provisioning")
 	if m.Endpoint == "" {
 		m.Endpoint = "/System/Info"
 	}
@@ -138,6 +143,7 @@ func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 
 	// 1) Allowlist bypass
 	if m.ipAllowed(ip) {
+		m.logger.Info("Allowlist bypass, continuing http request for jellyfin")
 		return next.ServeHTTP(w, r)
 	}
 
@@ -164,6 +170,7 @@ func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 	// 5) Cache hit
 	if m.isCached(clean) {
 		m.clearFailures(ip)
+		m.logger.Info("Cached auth, continuing http request for jellyfin")
 		return next.ServeHTTP(w, r)
 	}
 
@@ -177,10 +184,12 @@ func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 	// 7) Cache and allow
 	m.setCache(clean)
 	m.clearFailures(ip)
+	m.logger.Info("Initial request success, caching and continuing http request for jellyfin")
 	return next.ServeHTTP(w, r)
 }
 
 func teapot(w http.ResponseWriter, r *http.Request) error {
+	m.logger.Info("Rejecting request for jellyfin")
 	if r.ProtoMajor == 1 {
 		w.Header().Set("Connection", "close")
 	}
