@@ -26,7 +26,7 @@ func init() {
 
 
 func parseJellyfinCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
-    var m Middleware
+    var m JellyfinAuth
     // Delegate the block parsing to your existing UnmarshalCaddyfile
     if err := m.UnmarshalCaddyfile(h.Dispenser); err != nil {
         return nil, err
@@ -66,7 +66,7 @@ type failBucket struct {
 
 var _ caddy.Provisioner = (*JellyfinAuth)(nil)
 var _ caddy.Validator = (*JellyfinAuth)(nil)
-var _ caddyhttp.JellyfinAuthHandler = (*JellyfinAuth)(nil)
+var _ caddyhttp.MiddlewareHandler = (*JellyfinAuth)(nil)
 var _ caddyfile.Unmarshaler = (*JellyfinAuth)(nil)
 
 func (JellyfinAuth) CaddyModule() caddy.ModuleInfo {
