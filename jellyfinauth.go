@@ -132,8 +132,22 @@ func (m *JellyfinAuth) Validate() error {
 	return nil
 }
 
+// helper
+func isCORSPreflight(r *http.Request) bool {
+	return r.Method == http.MethodOptions &&
+		r.Header.Get("Origin") != "" &&
+		r.Header.Get("Access-Control-Request-Method") != ""
+}
+
 func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	// Allow ONLY true CORS preflights to pass through
+	if isCORSPreflight(r) {
+		// Do NOT count as a failure, and do NOT touch the connection headers.
+		return next.ServeHTTP(w, r)
+	}
+
 	ip := m.clientIP(r)
+
 
 	// 0) If IP is banned -> teapot
 	if m.isBanned(ip) {
