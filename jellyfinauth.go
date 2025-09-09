@@ -1,4 +1,4 @@
-package jellyfin_auth
+package jellyfinauth
 
 import (
 	"bufio"
@@ -16,13 +16,25 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 )
 
 func init() {
-	caddy.RegisterModule(Middleware{})
+	caddy.RegisterModule(JellyfinAuth{})
+	httpcaddyfile.RegisterHandlerDirective("jellyfinauth", parseJellyfinCaddyfile)
 }
 
-type Middleware struct {
+
+func parseJellyfinCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
+    var m Middleware
+    // Delegate the block parsing to your existing UnmarshalCaddyfile
+    if err := m.UnmarshalCaddyfile(h.Dispenser); err != nil {
+        return nil, err
+    }
+    return &m, nil
+}
+
+type JellyfinAuth struct {
 	Upstream       string         `json:"upstream,omitempty"`
 	Endpoint       string         `json:"endpoint,omitempty"`        // default /System/Info
 	RequireClient  string         `json:"require_client,omitempty"`  // e.g. Chromecast
@@ -52,19 +64,19 @@ type failBucket struct {
 	first time.Time
 }
 
-var _ caddy.Provisioner = (*Middleware)(nil)
-var _ caddy.Validator = (*Middleware)(nil)
-var _ caddyhttp.MiddlewareHandler = (*Middleware)(nil)
-var _ caddyfile.Unmarshaler = (*Middleware)(nil)
+var _ caddy.Provisioner = (*JellyfinAuth)(nil)
+var _ caddy.Validator = (*JellyfinAuth)(nil)
+var _ caddyhttp.JellyfinAuthHandler = (*JellyfinAuth)(nil)
+var _ caddyfile.Unmarshaler = (*JellyfinAuth)(nil)
 
-func (Middleware) CaddyModule() caddy.ModuleInfo {
+func (JellyfinAuth) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.jellyfinauth",
-		New: func() caddy.Module { return new(Middleware) },
+		New: func() caddy.Module { return new(JellyfinAuth) },
 	}
 }
 
-func (m *Middleware) Provision(caddy.Context) error {
+func (m *JellyfinAuth) Provision(caddy.Context) error {
 	if m.Endpoint == "" {
 		m.Endpoint = "/System/Info"
 	}
@@ -102,7 +114,7 @@ func (m *Middleware) Provision(caddy.Context) error {
 	return nil
 }
 
-func (m *Middleware) Validate() error {
+func (m *JellyfinAuth) Validate() error {
 	if m.Upstream == "" {
 		return errors.New("jellyfinauth: upstream is required (e.g. http://localhost:8096)")
 	}
@@ -116,7 +128,7 @@ func (m *Middleware) Validate() error {
 	return nil
 }
 
-func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	ip := m.clientIP(r)
 
 	// 0) If IP is banned -> teapot
@@ -177,7 +189,7 @@ func teapot(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (m *Middleware) validateWithUpstream(ctx context.Context, authHeader string) (bool, error) {
+func (m *JellyfinAuth) validateWithUpstream(ctx context.Context, authHeader string) (bool, error) {
 	base, _ := url.Parse(m.Upstream)
 	ep, _ := url.Parse(m.Endpoint)
 	u := base.ResolveReference(ep)
@@ -202,7 +214,7 @@ func (m *Middleware) validateWithUpstream(ctx context.Context, authHeader string
 
 // ----- Cache (Authorization) -----
 
-func (m *Middleware) isCached(key string) bool {
+func (m *JellyfinAuth) isCached(key string) bool {
 	now := time.Now()
 	m.mu.RLock()
 	exp, ok := m.cache[key]
@@ -219,7 +231,7 @@ func (m *Middleware) isCached(key string) bool {
 	return true
 }
 
-func (m *Middleware) setCache(key string) {
+func (m *JellyfinAuth) setCache(key string) {
 	m.mu.Lock()
 	m.cache[key] = time.Now().Add(time.Duration(m.CacheTTL))
 	m.mu.Unlock()
@@ -227,7 +239,7 @@ func (m *Middleware) setCache(key string) {
 
 // ----- Fail-2-ban -----
 
-func (m *Middleware) noteFailure(ip net.IP) {
+func (m *JellyfinAuth) noteFailure(ip net.IP) {
 	if ip == nil {
 		return
 	}
@@ -257,7 +269,7 @@ func (m *Middleware) noteFailure(ip net.IP) {
 	}
 }
 
-func (m *Middleware) clearFailures(ip net.IP) {
+func (m *JellyfinAuth) clearFailures(ip net.IP) {
 	if ip == nil {
 		return
 	}
@@ -266,7 +278,7 @@ func (m *Middleware) clearFailures(ip net.IP) {
 	m.mu.Unlock()
 }
 
-func (m *Middleware) isBanned(ip net.IP) bool {
+func (m *JellyfinAuth) isBanned(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
@@ -345,7 +357,7 @@ func isSingleLine(s string) bool {
 	return true
 }
 
-func (m *Middleware) clientIP(r *http.Request) net.IP {
+func (m *JellyfinAuth) clientIP(r *http.Request) net.IP {
 	if m.TrustForwarded {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			if i := strings.IndexByte(xff, ','); i >= 0 {
@@ -365,7 +377,7 @@ func (m *Middleware) clientIP(r *http.Request) net.IP {
 	return net.ParseIP(host)
 }
 
-func (m *Middleware) ipAllowed(ip net.IP) bool {
+func (m *JellyfinAuth) ipAllowed(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
@@ -379,7 +391,7 @@ func (m *Middleware) ipAllowed(ip net.IP) bool {
 
 // ---- Caddyfile parsing ----
 
-func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+func (m *JellyfinAuth) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
 			switch d.Val() {
