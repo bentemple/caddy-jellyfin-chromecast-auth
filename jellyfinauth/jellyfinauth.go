@@ -1,4 +1,4 @@
-package jellyfin_auth
+package jellyfinauth
 
 import (
 	"bufio"
@@ -23,18 +23,33 @@ func init() {
 }
 
 type Middleware struct {
-	Upstream       string          `json:"upstream,omitempty"`
-	Endpoint       string          `json:"endpoint,omitempty"`        // default /System/Info
-	RequireClient  string          `json:"require_client,omitempty"`  // e.g. Chromecast
-	CacheTTL       caddy.Duration  `json:"cache_ttl,omitempty"`       // default 10m
-	Timeout        caddy.Duration  `json:"timeout,omitempty"`         // default 2s
-	AllowCIDRs     []string        `json:"allow_cidrs,omitempty"`     // CIDR allowlist
-	TrustForwarded bool            `json:"trust_forwarded,omitempty"` // honor XFF/X-Real-IP
+	Upstream       string         `json:"upstream,omitempty"`
+	Endpoint       string         `json:"endpoint,omitempty"`        // default /System/Info
+	RequireClient  string         `json:"require_client,omitempty"`  // e.g. Chromecast
+	CacheTTL       caddy.Duration `json:"cache_ttl,omitempty"`       // default 10m
+	Timeout        caddy.Duration `json:"timeout,omitempty"`         // per-request ctx timeout; default 2s
 
-	client      *http.Client
+	// Always-allow networks (skip checks)
+	AllowCIDRs     []string `json:"allow_cidrs,omitempty"`
+	TrustForwarded bool     `json:"trust_forwarded,omitempty"`
+
+	// Fail-2-ban
+	FailBanThreshold int            `json:"failban_threshold,omitempty"` // e.g. 5 failures
+	FailBanWindow    caddy.Duration `json:"failban_window,omitempty"`    // e.g. 2m window
+	FailBanDuration  caddy.Duration `json:"failban_duration,omitempty"`  // e.g. 10m ban
+
+	client *http.Client
+
 	mu          sync.RWMutex
-	cache       map[string]time.Time
+	cache       map[string]time.Time   // Authorization header -> expiry
 	allowedNets []*net.IPNet
+	failStats   map[string]failBucket  // ip -> rolling failures
+	bans        map[string]time.Time   // ip -> banned until
+}
+
+type failBucket struct {
+	count int
+	first time.Time
 }
 
 var _ caddy.Provisioner = (*Middleware)(nil)
@@ -59,22 +74,23 @@ func (m *Middleware) Provision(caddy.Context) error {
 	if m.CacheTTL == 0 {
 		m.CacheTTL = caddy.Duration(10 * time.Minute)
 	}
-	m.client = &http.Client{
-		Timeout: time.Duration(m.Timeout),
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   1 * time.Second,
-				KeepAlive: 15 * time.Second,
-			}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          64,
-			IdleConnTimeout:       60 * time.Second,
-			TLSHandshakeTimeout:   1 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
+	// Sensible fail2ban defaults if not provided
+	if m.FailBanThreshold <= 0 {
+		m.FailBanThreshold = 5
 	}
+	if m.FailBanWindow == 0 {
+		m.FailBanWindow = caddy.Duration(2 * time.Minute)
+	}
+	if m.FailBanDuration == 0 {
+		m.FailBanDuration = caddy.Duration(10 * time.Minute)
+	}
+
+	// Use the global default client; apply per-request ctx timeouts instead of hard-coding transport/timeouts.
+	m.client = http.DefaultClient
+
 	m.cache = make(map[string]time.Time)
+	m.failStats = make(map[string]failBucket)
+	m.bans = make(map[string]time.Time)
 
 	for _, cidr := range m.AllowCIDRs {
 		_, n, err := net.ParseCIDR(strings.TrimSpace(cidr))
@@ -101,47 +117,63 @@ func (m *Middleware) Validate() error {
 }
 
 func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	// 0) IP allowlist: immediate pass-through if matched
-	if m.ipAllowed(m.clientIP(r)) {
+	ip := m.clientIP(r)
+
+	// 0) If IP is banned -> teapot
+	if m.isBanned(ip) {
+		return teapot(w, r)
+	}
+
+	// 1) Allowlist bypass
+	if m.ipAllowed(ip) {
 		return next.ServeHTTP(w, r)
 	}
 
-	// 1) Require MediaBrowser Authorization header
+	// 2) Require MediaBrowser Authorization header
 	auth := r.Header.Get("Authorization")
 	if auth == "" || !strings.Contains(auth, "MediaBrowser") {
-		return teapot(w)
+		m.noteFailure(ip)
+		return teapot(w, r)
 	}
 
-	// 2) Require specific Client (e.g., Chromecast)
+	// 3) Require specific Client (e.g., Chromecast)
 	if m.RequireClient != "" && !hasClient(auth, m.RequireClient) {
-		return teapot(w)
+		m.noteFailure(ip)
+		return teapot(w, r)
 	}
 
-	// 3) Sanitize header value
+	// 4) Sanitize header value
 	clean, ok := sanitizeAuth(auth)
 	if !ok {
-		return teapot(w)
+		m.noteFailure(ip)
+		return teapot(w, r)
 	}
 
-	// 4) Cache hit
+	// 5) Cache hit
 	if m.isCached(clean) {
+		m.clearFailures(ip)
 		return next.ServeHTTP(w, r)
 	}
 
-	// 5) Validate with upstream
+	// 6) Validate with upstream (per-request timeout)
 	ok, err := m.validateWithUpstream(r.Context(), clean)
 	if err != nil || !ok {
-		return teapot(w)
+		m.noteFailure(ip)
+		return teapot(w, r)
 	}
 
-	// 6) Cache and allow
+	// 7) Cache and allow
 	m.setCache(clean)
+	m.clearFailures(ip)
 	return next.ServeHTTP(w, r)
 }
 
-func teapot(w http.ResponseWriter) error {
-	w.Header().Set("Connection", "close")
-	http.Error(w, "I'm a teapot", http.StatusTeapot)
+func teapot(w http.ResponseWriter, r *http.Request) error {
+	if r.ProtoMajor == 1 {
+		w.Header().Set("Connection", "close")
+	}
+	w.Header().Set("Content-Length", "0")
+	w.WriteHeader(http.StatusTeapot)
 	return nil
 }
 
@@ -149,6 +181,13 @@ func (m *Middleware) validateWithUpstream(ctx context.Context, authHeader string
 	base, _ := url.Parse(m.Upstream)
 	ep, _ := url.Parse(m.Endpoint)
 	u := base.ResolveReference(ep)
+
+	// Per-request timeout via context, not client-level timeout.
+	if m.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(m.Timeout))
+		defer cancel()
+	}
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	req.Header.Set("Authorization", authHeader)
@@ -160,6 +199,8 @@ func (m *Middleware) validateWithUpstream(ctx context.Context, authHeader string
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK, nil
 }
+
+// ----- Cache (Authorization) -----
 
 func (m *Middleware) isCached(key string) bool {
 	now := time.Now()
@@ -184,8 +225,73 @@ func (m *Middleware) setCache(key string) {
 	m.mu.Unlock()
 }
 
+// ----- Fail-2-ban -----
+
+func (m *Middleware) noteFailure(ip net.IP) {
+	if ip == nil {
+		return
+	}
+	key := ip.String()
+	now := time.Now()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// If already banned, extend? Typically no — keep existing expiry.
+	if until, banned := m.bans[key]; banned && now.Before(until) {
+		return
+	}
+
+	b := m.failStats[key]
+	// Reset if outside window
+	window := time.Duration(m.FailBanWindow)
+	if b.first.IsZero() || now.Sub(b.first) > window {
+		b = failBucket{count: 0, first: now}
+	}
+	b.count++
+	m.failStats[key] = b
+
+	if b.count >= m.FailBanThreshold {
+		m.bans[key] = now.Add(time.Duration(m.FailBanDuration))
+		delete(m.failStats, key) // reset counter after ban
+	}
+}
+
+func (m *Middleware) clearFailures(ip net.IP) {
+	if ip == nil {
+		return
+	}
+	m.mu.Lock()
+	delete(m.failStats, ip.String())
+	m.mu.Unlock()
+}
+
+func (m *Middleware) isBanned(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	now := time.Now()
+	key := ip.String()
+
+	m.mu.RLock()
+	until, ok := m.bans[key]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	if now.After(until) {
+		// Expired; clean up
+		m.mu.Lock()
+		delete(m.bans, key)
+		m.mu.Unlock()
+		return false
+	}
+	return true
+}
+
+// ----- Utils -----
+
 func hasClient(auth, want string) bool {
-	// tolerate either Client="Chromecast" or Client=Chromecast
 	if strings.Contains(auth, `Client="`+want+`"`) {
 		return true
 	}
@@ -318,6 +424,33 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				m.AllowCIDRs = append(m.AllowCIDRs, args...)
 			case "trust_forwarded":
 				m.TrustForwarded = true
+			case "failban_threshold":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				var v int
+				if _, err := fmt.Sscanf(d.Arg(), "%d", &v); err != nil || v <= 0 {
+					return d.Errf("invalid failban_threshold: %q", d.Arg())
+				}
+				m.FailBanThreshold = v
+			case "failban_window":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				dur, err := time.ParseDuration(d.Arg())
+				if err != nil {
+					return d.Errf("invalid failban_window: %v", err)
+				}
+				m.FailBanWindow = caddy.Duration(dur)
+			case "failban_duration":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				dur, err := time.ParseDuration(d.Arg())
+				if err != nil {
+					return d.Errf("invalid failban_duration: %v", err)
+				}
+				m.FailBanDuration = caddy.Duration(dur)
 			default:
 				return d.Errf("unrecognized subdirective %q", d.Val())
 			}
