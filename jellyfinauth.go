@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -79,7 +78,7 @@ func (JellyfinAuth) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (m *JellyfinAuth) Provision(caddy.Context) error {
+func (m *JellyfinAuth) Provision(ctx caddy.Context) error {
 	m.logger = ctx.Logger().Named("jellyfinauth")
 	m.logger.Info("JellyfinAuth middleware provisioning")
 	if m.Endpoint == "" {
@@ -138,7 +137,7 @@ func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 
 	// 0) If IP is banned -> teapot
 	if m.isBanned(ip) {
-		return teapot(w, r)
+		return m.teapot(w, r)
 	}
 
 	// 1) Allowlist bypass
@@ -151,20 +150,20 @@ func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 	auth := r.Header.Get("Authorization")
 	if auth == "" || !strings.Contains(auth, "MediaBrowser") {
 		m.noteFailure(ip)
-		return teapot(w, r)
+		return m.teapot(w, r)
 	}
 
 	// 3) Require specific Client (e.g., Chromecast)
 	if m.RequireClient != "" && !hasClient(auth, m.RequireClient) {
 		m.noteFailure(ip)
-		return teapot(w, r)
+		return m.teapot(w, r)
 	}
 
 	// 4) Sanitize header value
 	clean, ok := sanitizeAuth(auth)
 	if !ok {
 		m.noteFailure(ip)
-		return teapot(w, r)
+		return m.teapot(w, r)
 	}
 
 	// 5) Cache hit
@@ -178,7 +177,7 @@ func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 	ok, err := m.validateWithUpstream(r.Context(), clean)
 	if err != nil || !ok {
 		m.noteFailure(ip)
-		return teapot(w, r)
+		return m.teapot(w, r)
 	}
 
 	// 7) Cache and allow
@@ -188,7 +187,7 @@ func (m *JellyfinAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next ca
 	return next.ServeHTTP(w, r)
 }
 
-func teapot(w http.ResponseWriter, r *http.Request) error {
+func (m *JellyfinAuth) teapot(w http.ResponseWriter, r *http.Request) error {
 	m.logger.Info("Rejecting request for jellyfin")
 	if r.ProtoMajor == 1 {
 		w.Header().Set("Connection", "close")
