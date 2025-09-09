@@ -57,7 +57,7 @@ var _ caddy.Validator = (*Middleware)(nil)
 var _ caddyhttp.MiddlewareHandler = (*Middleware)(nil)
 var _ caddyfile.Unmarshaler = (*Middleware)(nil)
 
-func (m *Middleware) CaddyModule() caddy.ModuleInfo {
+func (Middleware) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.jellyfinauth",
 		New: func() caddy.Module { return new(Middleware) },
@@ -387,22 +387,22 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				m.Upstream = d.Arg()
+				m.Upstream = d.Val()
 			case "endpoint":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				m.Endpoint = d.Arg()
+				m.Endpoint = d.Val()
 			case "require_client":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				m.RequireClient = d.Arg()
+				m.RequireClient = d.Val()
 			case "cache_ttl":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				dur, err := time.ParseDuration(d.Arg())
+				dur, err := time.ParseDuration(d.Val())
 				if err != nil {
 					return d.Errf("invalid cache_ttl: %v", err)
 				}
@@ -411,7 +411,7 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				dur, err := time.ParseDuration(d.Arg())
+				dur, err := time.ParseDuration(d.Val())
 				if err != nil {
 					return d.Errf("invalid timeout: %v", err)
 				}
@@ -429,15 +429,15 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				var v int
-				if _, err := fmt.Sscanf(d.Arg(), "%d", &v); err != nil || v <= 0 {
-					return d.Errf("invalid failban_threshold: %q", d.Arg())
+				if _, err := fmt.Sscanf(d.Val(), "%d", &v); err != nil || v <= 0 {
+					return d.Errf("invalid failban_threshold: %q", d.Val())
 				}
 				m.FailBanThreshold = v
 			case "failban_window":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				dur, err := time.ParseDuration(d.Arg())
+				dur, err := time.ParseDuration(d.Val())
 				if err != nil {
 					return d.Errf("invalid failban_window: %v", err)
 				}
@@ -446,7 +446,7 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				dur, err := time.ParseDuration(d.Arg())
+				dur, err := time.ParseDuration(d.Val())
 				if err != nil {
 					return d.Errf("invalid failban_duration: %v", err)
 				}
