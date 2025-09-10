@@ -29,23 +29,32 @@ xcaddy build \
 
 :8443 {
 	handle {
-		jellyfinauth {
-			upstream        http://localhost:8096
-			endpoint        /System/Info
-			require_client  Chromecast
-			cache_ttl       10m
-			timeout         2s
+	    // Will reverse proxy accepted traffic to upstream host
+	    jellyfinauth {
+            upstream        http://jellyfin:8096
+            endpoint        /System/Info
+            cache_ttl       60m
+            timeout         2s
 
-			# Always allow these ranges
-			allow_cidr      192.168.0.0/16 10.0.0.0/8
-			allow_cidr      172.16.0.0/12
+            # preflight policy
+            allow_origin                 https://apps.jellyfin.org
+            allow_preflight_method       GET POST
+            allow_preflight_ua           CrKey/ Chromecast Jellyfin
+            preflight_require_known_ip
+            warm_ip_ttl                  15m
 
-			# If behind a trusted proxy/LB
-			trust_forwarded
-		}
+            # secondary (warm) requests policy (inherits if omitted)
+            allow_secondary_ua           CrKey/ Chromecast Jellyfin
+            allow_secondary_origin       https://apps.jellyfin.org *.jellyfin.org
 
-		root * /srv/site
-		file_server
+            allow_cidr       127.0.0.1/32 192.168.0.0/16 172.16.0.0/12
+            // Enable if behind a trusted loadbalancer
+            //trust_forwarded
+
+            failban_threshold 5
+            failban_window    2m
+            failban_duration  10m
+        }
 	}
 }
 ```

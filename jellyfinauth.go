@@ -64,11 +64,11 @@ type Middleware struct {
 	client      *http.Client
 	proxy       *httputil.ReverseProxy
 	mu          sync.RWMutex
-	cache       map[string]time.Time   // Authorization -> expiry
+	cache       map[string]time.Time // Authorization -> expiry
 	allowedNets []*net.IPNet
-	failStats   map[string]failBucket  // ip -> failures within window
-	bans        map[string]time.Time   // ip -> banned until
-	warmIP      map[string]time.Time   // ip -> warm until
+	failStats   map[string]failBucket // ip -> failures within window
+	bans        map[string]time.Time  // ip -> banned until
+	warmIP      map[string]time.Time  // ip -> warm until
 }
 
 type failBucket struct {
@@ -85,9 +85,9 @@ var (
 	_ caddyfile.Unmarshaler       = (*Middleware)(nil)
 	_ caddy.Module                = (*Middleware)(nil)
 
-	reImagePath = regexp.MustCompile(`(?i)^/items/[^/]+/images/`)
-	reHLSMaster = regexp.MustCompile(`(?i)^/videos/[^/]+/master\.m3u8$`)
-	reHLSPath   = regexp.MustCompile(`(?i)^/videos/[^/]+/(hls/|live/)`)
+	reImagePath = regexp.MustCompile("(?i)^/items/[^/]+/images/")
+	reHLSMaster = regexp.MustCompile("(?i)^/videos/[^/]+/master\\.m3u8$")
+	reHLSPath   = regexp.MustCompile("(?i)^/videos/[^/]+/(hls/|live/)")
 )
 
 func (Middleware) CaddyModule() caddy.ModuleInfo {
@@ -172,8 +172,8 @@ func (m *Middleware) Provision(ctx caddy.Context) error {
 	origDirector := rp.Director
 	rp.Director = func(req *http.Request) {
 		origHost := req.Host
-		origDirector(req)      // set scheme/host to upstream
-		req.Host = origHost    // preserve incoming Host for Jellyfin
+		origDirector(req)   // set scheme/host to upstream
+		req.Host = origHost // preserve incoming Host for Jellyfin
 		if req.Header.Get("X-Forwarded-Proto") == "" {
 			if req.TLS != nil {
 				req.Header.Set("X-Forwarded-Proto", "https")
@@ -789,4 +789,3 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	}
 	return nil
 }
-
