@@ -12,7 +12,7 @@ This is a Caddy HTTP middleware plugin (`caddy-jellyfinauth`) that provides auth
 - Implements in-memory caching with TTL
 - Includes fail2ban-style protection
 - Supports CORS preflight handling
-- Allows secondary requests (images/HLS) from "warm" IPs
+- Allows secondary requests (images/HLS) from temp-allowed IPs
 
 ## Build Commands
 
@@ -42,7 +42,7 @@ go mod tidy
 1. CORS preflight check → allow if expected
 2. IP ban check → reject if banned
 3. IP allowlist check → bypass auth if allowed
-4. Warm IP secondary request check → allow images/HLS
+4. Temp Allowed IP secondary request check → allow images/HLS
 5. Authorization header validation → sanitize and validate format
 6. Cache check → serve if valid cached token
 7. Upstream validation → validate token with Jellyfin API

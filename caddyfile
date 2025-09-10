@@ -20,7 +20,7 @@
             allow_origin   https://apps.jellyfin.org
             #allow_preflight_method GET POST
             preflight_require_known_ip
-            warm_ip_ttl    30m
+            temp_allowed_ip_ttl    30m
 
             # fail-2-ban
             failban_threshold 10

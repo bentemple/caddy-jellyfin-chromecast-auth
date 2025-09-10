@@ -41,9 +41,9 @@ xcaddy build \
             allow_preflight_method       GET POST
             allow_preflight_ua           CrKey/ Chromecast Jellyfin
             preflight_require_known_ip
-            warm_ip_ttl                  15m
+            temp_allowed_ip_ttl                  15m
 
-            # secondary (warm) requests policy (inherits if omitted)
+            # secondary (temp-allowed) requests policy (inherits if omitted)
             allow_secondary_ua           CrKey/ Chromecast Jellyfin
             allow_secondary_origin       https://apps.jellyfin.org *.jellyfin.org
 
