@@ -2,13 +2,19 @@
 
 CONTAINS AI GENERATED CODE.
 
-A tiny Caddy HTTP middleware that:
-- Accepts requests from specific IP ranges (CIDR allowlist) without checks.
-- Otherwise requires `Authorization: MediaBrowser ...` with `Client="Chromecast"`.
-- Sanitizes the header defensively.
-- Validates the token by probing Jellyfin (default: `/System/Info`).
-- Caches successful `Authorization` headers in memory (TTL).
-- On any failure: responds **418 I’m a teapot** and closes the connection.
+## Why
+My goal with this middleware is to allow chromecast requests that are outside of the VPN to succeed and function after passing an http request with a valid authorization header. Until that authorization header has successfully been used to connect to Jellyfin, all requests should respond as if jellyfin is not a running service (assuming `preflight_require_known_ip` is set).
+
+## Features
+
+A Caddy HTTP middleware that functions as a reverse proxy with the following additional features:
+- Allows IP allowlist bypassing (CIDR ranges)
+- Requires `Authorization: MediaBrowser ...` headers with `Client="Chromecast"`
+- Validates tokens against Jellyfin's API
+- Implements in-memory caching with TTL
+- Includes fail2ban-style protection
+- Supports CORS preflight handling
+- Allows secondary requests (images/HLS) from temp-allowed IPs
 
 ## Build
 
