@@ -232,6 +232,13 @@ func (m *Middleware) Validate() error {
 func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	ip := m.clientIP(r)
 
+	// Allowlist -> proxy and mark warm
+	if m.ipAllowed(ip) {
+		ctx := context.WithValue(r.Context(), ctxIPKey{}, ip.String())
+		m.proxy.ServeHTTP(w, r.WithContext(ctx))
+		return nil
+	}
+
 	// True CORS preflight? Only allow if "expected"
 	if isCORSPreflight(r) {
 		if m.preflightAllowed(r, ip) {
@@ -245,14 +252,6 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next cadd
 	// Ban check
 	if m.isBanned(ip) {
 		return teapot(w, r)
-	}
-
-	// Allowlist -> proxy and mark warm
-	if m.ipAllowed(ip) {
-		m.markWarmIP(ip)
-		ctx := context.WithValue(r.Context(), ctxIPKey{}, ip.String())
-		m.proxy.ServeHTTP(w, r.WithContext(ctx))
-		return nil
 	}
 
 	// Warm secondary GETs (images, HLS with api_key) -> proxy
