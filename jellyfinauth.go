@@ -148,9 +148,9 @@ func (m *Middleware) Provision(ctx caddy.Context) error {
 	if len(m.AllowedSecondaryOrigins) == 0 {
 		m.AllowedSecondaryOrigins = append([]string(nil), m.AllowedOrigins...)
 	}
-	if len(m.OKStatuses) == 0 {
-		m.OKStatuses = []int{http.StatusOK, http.StatusNoContent, http.StatusPartialContent, http.StatusNotModified} // 200,204,206,304
-	}
+	//if len(m.OKStatuses) == 0 {
+	//m.OKStatuses = []int{http.StatusOK, http.StatusNoContent, http.StatusPartialContent, http.StatusNotModified} // 200,204,206,304
+	//}
 
 	m.client = http.DefaultClient
 	m.cache = make(map[string]time.Time)
@@ -167,6 +167,7 @@ func (m *Middleware) Provision(ctx caddy.Context) error {
 	}
 
 	up, err := url.Parse(m.Upstream)
+
 	if err != nil {
 		return fmt.Errorf("invalid upstream: %v", err)
 	}
@@ -175,8 +176,14 @@ func (m *Middleware) Provision(ctx caddy.Context) error {
 	origDirector := rp.Director
 	rp.Director = func(req *http.Request) {
 		origHost := req.Host
-		origDirector(req)   // set scheme/host to upstream
-		req.Host = origHost // preserve incoming Host for Jellyfin
+		origPath := req.URL.Path
+		origDirector(req) // set scheme/host to upstream
+
+		req.Host = up.Host
+		// Set proper headers for upstream
+		if req.Header.Get("X-Forwarded-Host") == "" {
+			req.Header.Set("X-Forwarded-Host", origHost)
+		}
 		if req.Header.Get("X-Forwarded-Proto") == "" {
 			if req.TLS != nil {
 				req.Header.Set("X-Forwarded-Proto", "https")
@@ -184,6 +191,15 @@ func (m *Middleware) Provision(ctx caddy.Context) error {
 				req.Header.Set("X-Forwarded-Proto", "http")
 			}
 		}
+
+		slog.Debug("jellyfinauth: proxying request",
+			"original_host", origHost,
+			"original_path", origPath,
+			"target_url", req.URL.String(),
+			"target_host", req.Host,
+			"upstream_host", up.Host,
+			"target_path", req.URL.Path,
+			"method", req.Method)
 	}
 	rp.FlushInterval = -1
 	var errUpstreamNonOK = errors.New("upstream returned non-OK")
@@ -191,23 +207,38 @@ func (m *Middleware) Provision(ctx caddy.Context) error {
 		ipStr, _ := resp.Request.Context().Value(ctxIPKey{}).(string)
 		ip := net.ParseIP(ipStr)
 
-		ok := false
-		for _, s := range m.OKStatuses {
-			if resp.StatusCode == s {
-				ok = true
-				break
+		// OK if no OKStatuses defined and >=100 && <400
+		ok := len(m.OKStatuses) == 0 &&
+			resp.StatusCode >= http.StatusContinue &&
+			resp.StatusCode < http.StatusBadRequest
+
+		if !ok {
+			// Otherwise, verify that it is an acceptable response status.
+			for _, s := range m.OKStatuses {
+				if resp.StatusCode == s {
+					ok = true
+					break
+				}
 			}
 		}
 		if ok {
+			slog.Debug("jellyfinauth: upstream response OK", "status_code", resp.StatusCode, "url", resp.Request.URL.String())
 			m.clearFailures(ip)
 			m.markWarmIP(ip)
 			return nil
 		}
 		// Non-OK -> count a failure; ErrorHandler sends 418
+		slog.Debug("jellyfinauth: upstream response not OK", "status_code", resp.StatusCode, "url", resp.Request.URL.String(), "ok_statuses", m.OKStatuses)
 		m.noteFailure(ip)
 		return errUpstreamNonOK
 	}
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		slog.Error("jellyfinauth: proxy error",
+			"error", err.Error(),
+			"target_url", r.URL.String(),
+			"method", r.Method,
+			"path", r.URL.Path,
+			"upstream", m.Upstream)
 		_ = teapot(w, r)
 	}
 	rp.Transport = http.DefaultTransport

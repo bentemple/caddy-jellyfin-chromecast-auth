@@ -1,0 +1,32 @@
+{
+    order jellyfinauth before reverse_proxy
+}
+
+:8443 {
+    handle {
+        jellyfinauth {
+            upstream        192.168.1.10:8096
+            endpoint        /System/Info
+            cache_ttl       60m
+            timeout         2s
+
+            # upstream OK statuses (defaults shown)
+            #ok_status       200 206 302 304
+
+            # allowlists and preflight policy (as you’ve been using)
+            allow_cidr       127.0.0.1/32 192.168.0.0/16 172.16.0.0/12
+
+            # (optional) strict preflight controls you added earlier
+            allow_origin   https://apps.jellyfin.org
+            #allow_preflight_method GET POST
+            preflight_require_known_ip
+            warm_ip_ttl    30m
+
+            # fail-2-ban
+            failban_threshold 10
+            failban_window    2m
+            failban_duration  10m
+        }
+    }
+
+}
