@@ -39,8 +39,9 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next cadd
 		"path", r.URL.Path,
 		"method", r.Method)
 
-	// Allowlist -> proxy and mark temp-allowed
-	if m.ipAllowed(ip) {
+	// Allowlist -> proxy
+	// No need to mark as temp-allowed, since all IPs in the CIDRs block will be allowed
+	if m.isIPAlwaysAllowed(ip) {
 		slog.Debug("jellyfinauth: IP allowed, proxying", "ip", ip.String())
 		ctx := context.WithValue(r.Context(), ctxIPKey{}, ip.String())
 		m.proxy.ServeHTTP(w, r.WithContext(ctx))

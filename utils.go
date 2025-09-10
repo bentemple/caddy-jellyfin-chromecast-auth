@@ -38,8 +38,8 @@ func (m *Middleware) clientIP(r *http.Request) net.IP {
 	return net.ParseIP(host)
 }
 
-// ipAllowed checks if an IP address is in the allowed networks list
-func (m *Middleware) ipAllowed(ip net.IP) bool {
+// isIPAlwaysAllowed checks if an IP address is in the allowed networks list
+func (m *Middleware) isIPAlwaysAllowed(ip net.IP) bool {
 	if ip == nil {
 		slog.Debug("jellyfinauth: IP is nil")
 		return false
