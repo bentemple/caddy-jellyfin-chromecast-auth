@@ -109,6 +109,8 @@ func parseJellyfinauthCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHan
 // --- Provision/Validate ---
 
 func (m *Middleware) Provision(ctx caddy.Context) error {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+
 	if m.Endpoint == "" {
 		m.Endpoint = "/System/Info"
 	}
@@ -232,7 +234,7 @@ func (m *Middleware) Validate() error {
 
 func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	ip := m.clientIP(r)
-	
+
 	slog.Debug("jellyfinauth: processing request",
 		"detected_ip", ip.String(),
 		"remote_addr", r.RemoteAddr,
@@ -249,7 +251,7 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next cadd
 		m.proxy.ServeHTTP(w, r.WithContext(ctx))
 		return nil
 	}
-	
+
 	slog.Debug("jellyfinauth: IP not in allowlist, continuing auth flow", "ip", ip.String())
 
 	// True CORS preflight? Only allow if "expected"
