@@ -37,6 +37,8 @@ type Middleware struct {
 	CacheTTL caddy.Duration `json:"cache_ttl,omitempty"`
 	// Per-request validation timeout (default: 2s)
 	Timeout caddy.Duration `json:"timeout,omitempty"`
+	// Log level (debug, info, warn, error) - default: info
+	LogLevel string `json:"log_level,omitempty"`
 
 	// Always-allow networks (skip checks, mark warm, proxy)
 	AllowCIDRs     []string `json:"allow_cidrs,omitempty"`
@@ -109,7 +111,24 @@ func parseJellyfinauthCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHan
 // --- Provision/Validate ---
 
 func (m *Middleware) Provision(ctx caddy.Context) error {
-	slog.SetLogLoggerLevel(slog.LevelDebug)
+	// Set log level
+	if m.LogLevel == "" {
+		m.LogLevel = "info"
+	}
+	var level slog.Level
+	switch strings.ToLower(m.LogLevel) {
+	case "debug":
+		level = slog.LevelDebug
+	case "info":
+		level = slog.LevelInfo
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		return fmt.Errorf("invalid log_level %q, must be: debug, info, warn, error", m.LogLevel)
+	}
+	slog.SetLogLoggerLevel(level)
 
 	if m.Endpoint == "" {
 		m.Endpoint = "/System/Info"
@@ -744,6 +763,11 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid timeout: %v", err)
 				}
 				m.Timeout = caddy.Duration(dur)
+			case "log_level":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				m.LogLevel = d.Val()
 			case "allow_cidr":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
