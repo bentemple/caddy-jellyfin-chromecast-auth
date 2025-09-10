@@ -46,12 +46,16 @@ type Middleware struct {
 	FailBanWindow    caddy.Duration `json:"failban_window,omitempty"`    // default: 2m
 	FailBanDuration  caddy.Duration `json:"failban_duration,omitempty"`  // default: 10m
 
-	// Preflight policy (tight by default to reduce fingerprinting)
-	AllowedOrigins             []string       `json:"allowed_origins,omitempty"`            // e.g. https://apps.jellyfin.org
-	AllowedPreflightMethods    []string       `json:"allowed_preflight_methods,omitempty"`  // e.g. GET POST
-	AllowedPreflightUA         []string       `json:"allowed_preflight_ua,omitempty"`       // substrings, e.g. CrKey/ Chromecast Jellyfin
+	// Preflight policy
+	AllowedOrigins             []string       `json:"allowed_origins,omitempty"`           // e.g. https://apps.jellyfin.org
+	AllowedPreflightMethods    []string       `json:"allowed_preflight_methods,omitempty"` // e.g. GET POST
+	AllowedPreflightUA         []string       `json:"allowed_preflight_ua,omitempty"`      // substrings/wildcards
 	RequireKnownIPForPreflight bool           `json:"require_known_ip_for_preflight,omitempty"`
 	WarmIPTTL                  caddy.Duration `json:"warm_ip_ttl,omitempty"` // default: 15m
+
+	// Secondary (non-auth) GETs (images/HLS) policy
+	AllowedSecondaryUA      []string `json:"allowed_secondary_ua,omitempty"`
+	AllowedSecondaryOrigins []string `json:"allowed_secondary_origins,omitempty"`
 
 	// Upstream “OK” statuses (default: 200, 204, 206, 304)
 	OKStatuses []int `json:"ok_statuses,omitempty"`
@@ -75,14 +79,15 @@ type failBucket struct {
 type ctxIPKey struct{}
 
 var (
-	_ caddy.Provisioner              = (*Middleware)(nil)
-	_ caddy.Validator                = (*Middleware)(nil)
-	_ caddyhttp.MiddlewareHandler    = (*Middleware)(nil)
-	_ caddyfile.Unmarshaler          = (*Middleware)(nil)
-	_ caddy.Module                   = (*Middleware)(nil)
-	reImagePath    = regexp.MustCompile(`(?i)^/items/[^/]+/images/`)
-	reHLSMaster    = regexp.MustCompile(`(?i)^/videos/[^/]+/master\.m3u8$`)
-	reHLSPath      = regexp.MustCompile(`(?i)^/videos/[^/]+/(hls/|live/)`)
+	_ caddy.Provisioner           = (*Middleware)(nil)
+	_ caddy.Validator             = (*Middleware)(nil)
+	_ caddyhttp.MiddlewareHandler = (*Middleware)(nil)
+	_ caddyfile.Unmarshaler       = (*Middleware)(nil)
+	_ caddy.Module                = (*Middleware)(nil)
+
+	reImagePath = regexp.MustCompile(`(?i)^/items/[^/]+/images/`)
+	reHLSMaster = regexp.MustCompile(`(?i)^/videos/[^/]+/master\.m3u8$`)
+	reHLSPath   = regexp.MustCompile(`(?i)^/videos/[^/]+/(hls/|live/)`)
 )
 
 func (Middleware) CaddyModule() caddy.ModuleInfo {
@@ -132,6 +137,13 @@ func (m *Middleware) Provision(ctx caddy.Context) error {
 	}
 	if len(m.AllowedPreflightUA) == 0 {
 		m.AllowedPreflightUA = []string{"CrKey/", "Chromecast", "Jellyfin"}
+	}
+	// inherit to secondary if unset
+	if len(m.AllowedSecondaryUA) == 0 {
+		m.AllowedSecondaryUA = append([]string(nil), m.AllowedPreflightUA...)
+	}
+	if len(m.AllowedSecondaryOrigins) == 0 {
+		m.AllowedSecondaryOrigins = append([]string(nil), m.AllowedOrigins...)
 	}
 	if len(m.OKStatuses) == 0 {
 		m.OKStatuses = []int{http.StatusOK, http.StatusNoContent, http.StatusPartialContent, http.StatusNotModified} // 200,204,206,304
@@ -188,7 +200,7 @@ func (m *Middleware) Provision(ctx caddy.Context) error {
 			m.markWarmIP(ip)
 			return nil
 		}
-		// Count as failure; ErrorHandler will send 418
+		// Non-OK -> count a failure; ErrorHandler sends 418
 		m.noteFailure(ip)
 		return errUpstreamNonOK
 	}
@@ -343,17 +355,21 @@ func (m *Middleware) allowWarmSecondary(r *http.Request, ip net.IP) bool {
 		return false
 	}
 
-	ua := strings.ToLower(r.Header.Get("User-Agent"))
-	if !(strings.Contains(ua, "crkey/") || strings.Contains(ua, "chromecast") || strings.Contains(ua, "jellyfin")) {
+	// UA must match allowed secondary UA list
+	if len(m.AllowedSecondaryUA) > 0 && !matchOneCI(r.Header.Get("User-Agent"), m.AllowedSecondaryUA) {
 		return false
 	}
 
-	origin := strings.ToLower(r.Header.Get("Origin"))
-	if origin != "" && origin != "https://apps.jellyfin.org" {
-		return false
-	}
-	if origin == "" && refererHost(r) != "apps.jellyfin.org" {
-		return false
+	// Origin/Referer must match allowed secondary origins (if any)
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		if len(m.AllowedSecondaryOrigins) > 0 && !matchOneCI(origin, m.AllowedSecondaryOrigins) {
+			return false
+		}
+	} else {
+		if len(m.AllowedSecondaryOrigins) > 0 && !matchOneCI(r.Header.Get("Referer"), m.AllowedSecondaryOrigins) {
+			return false
+		}
 	}
 
 	p := strings.ToLower(r.URL.Path)
@@ -364,6 +380,35 @@ func (m *Middleware) allowWarmSecondary(r *http.Request, ip net.IP) bool {
 		return hasAPIKey(r)
 	}
 	return false
+}
+
+// Warm-IP memory (used by preflights & secondary GETs)
+func (m *Middleware) isWarmIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	now := time.Now()
+	m.mu.RLock()
+	until, ok := m.warmIP[ip.String()]
+	m.mu.RUnlock()
+	if !ok || now.After(until) {
+		if ok {
+			m.mu.Lock()
+			delete(m.warmIP, ip.String())
+			m.mu.Unlock()
+		}
+		return false
+	}
+	return true
+}
+
+func (m *Middleware) markWarmIP(ip net.IP) {
+	if ip == nil {
+		return
+	}
+	m.mu.Lock()
+	m.warmIP[ip.String()] = time.Now().Add(time.Duration(m.WarmIPTTL))
+	m.mu.Unlock()
 }
 
 func hasAPIKey(r *http.Request) bool {
@@ -436,7 +481,6 @@ func (m *Middleware) noteFailure(ip net.IP) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Already banned? keep current expiry
 	if until, banned := m.bans[key]; banned && now.Before(until) {
 		return
 	}
@@ -572,15 +616,6 @@ func (m *Middleware) ipAllowed(ip net.IP) bool {
 	return false
 }
 
-func refererHost(r *http.Request) string {
-	if ref := r.Header.Get("Referer"); ref != "" {
-		if u, err := url.Parse(ref); err == nil {
-			return strings.ToLower(u.Hostname())
-		}
-	}
-	return ""
-}
-
 func matchOneCI(s string, patterns []string) bool {
 	ls := strings.ToLower(s)
 	for _, p := range patterns {
@@ -631,19 +666,16 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				m.Upstream = d.Val()
-
 			case "endpoint":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
 				m.Endpoint = d.Val()
-
 			case "require_client":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
 				m.RequireClient = d.Val()
-
 			case "cache_ttl":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -653,7 +685,6 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid cache_ttl: %v", err)
 				}
 				m.CacheTTL = caddy.Duration(dur)
-
 			case "timeout":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -663,17 +694,14 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid timeout: %v", err)
 				}
 				m.Timeout = caddy.Duration(dur)
-
 			case "allow_cidr":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
 				}
 				m.AllowCIDRs = append(m.AllowCIDRs, args...)
-
 			case "trust_forwarded":
 				m.TrustForwarded = true
-
 			case "failban_threshold":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -683,7 +711,6 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid failban_threshold: %q", d.Val())
 				}
 				m.FailBanThreshold = v
-
 			case "failban_window":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -693,7 +720,6 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid failban_window: %v", err)
 				}
 				m.FailBanWindow = caddy.Duration(dur)
-
 			case "failban_duration":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -703,31 +729,26 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid failban_duration: %v", err)
 				}
 				m.FailBanDuration = caddy.Duration(dur)
-
 			case "allow_origin":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
 				}
 				m.AllowedOrigins = append(m.AllowedOrigins, args...)
-
 			case "allow_preflight_method":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
 				}
 				m.AllowedPreflightMethods = append(m.AllowedPreflightMethods, args...)
-
 			case "allow_preflight_ua":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
 				}
 				m.AllowedPreflightUA = append(m.AllowedPreflightUA, args...)
-
 			case "preflight_require_known_ip":
 				m.RequireKnownIPForPreflight = true
-
 			case "warm_ip_ttl":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -737,7 +758,18 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid warm_ip_ttl: %v", err)
 				}
 				m.WarmIPTTL = caddy.Duration(dur)
-
+			case "allow_secondary_ua":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				m.AllowedSecondaryUA = append(m.AllowedSecondaryUA, args...)
+			case "allow_secondary_origin":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				m.AllowedSecondaryOrigins = append(m.AllowedSecondaryOrigins, args...)
 			case "ok_status":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
@@ -750,7 +782,6 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					}
 					m.OKStatuses = append(m.OKStatuses, v)
 				}
-
 			default:
 				return d.Errf("unrecognized subdirective %q", d.Val())
 			}
