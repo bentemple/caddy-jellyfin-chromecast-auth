@@ -5,13 +5,13 @@
 :8443 {
     handle {
         jellyfinauth {
-            upstream        192.168.1.10:8096
+            upstream        http://192.168.1.10:8096
             endpoint        /System/Info
             cache_ttl       60m
             timeout         2s
 
             # upstream OK statuses (defaults shown)
-            #ok_status       200 206 302 304
+            # ok_status       200 206 302 304
 
             # allowlists and preflight policy (as you’ve been using)
             allow_cidr       127.0.0.1/32 192.168.0.0/16 172.16.0.0/12
