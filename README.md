@@ -59,4 +59,4 @@ xcaddy build \
 }
 ```
 
-Generated with ChatGPT
+Generated with ChatGPT and ClaudeCode
