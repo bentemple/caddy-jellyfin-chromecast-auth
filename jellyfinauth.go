@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -231,13 +232,25 @@ func (m *Middleware) Validate() error {
 
 func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	ip := m.clientIP(r)
+	
+	slog.Debug("jellyfinauth: processing request",
+		"detected_ip", ip.String(),
+		"remote_addr", r.RemoteAddr,
+		"x_forwarded_for", r.Header.Get("X-Forwarded-For"),
+		"x_real_ip", r.Header.Get("X-Real-IP"),
+		"trust_forwarded", m.TrustForwarded,
+		"path", r.URL.Path,
+		"method", r.Method)
 
 	// Allowlist -> proxy and mark warm
 	if m.ipAllowed(ip) {
+		slog.Debug("jellyfinauth: IP allowed, proxying", "ip", ip.String())
 		ctx := context.WithValue(r.Context(), ctxIPKey{}, ip.String())
 		m.proxy.ServeHTTP(w, r.WithContext(ctx))
 		return nil
 	}
+	
+	slog.Debug("jellyfinauth: IP not in allowlist, continuing auth flow", "ip", ip.String())
 
 	// True CORS preflight? Only allow if "expected"
 	if isCORSPreflight(r) {
@@ -605,13 +618,18 @@ func (m *Middleware) clientIP(r *http.Request) net.IP {
 
 func (m *Middleware) ipAllowed(ip net.IP) bool {
 	if ip == nil {
+		slog.Debug("jellyfinauth: IP is nil")
 		return false
 	}
-	for _, n := range m.allowedNets {
+	slog.Debug("jellyfinauth: checking IP against allowlist", "ip", ip.String(), "allowed_nets_count", len(m.allowedNets))
+	for i, n := range m.allowedNets {
+		slog.Debug("jellyfinauth: checking against network", "ip", ip.String(), "network", n.String(), "index", i)
 		if n.Contains(ip) {
+			slog.Debug("jellyfinauth: IP matches network", "ip", ip.String(), "network", n.String())
 			return true
 		}
 	}
+	slog.Debug("jellyfinauth: IP does not match any allowed networks", "ip", ip.String())
 	return false
 }
 
